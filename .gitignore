@@ -1,3 +1,4 @@
 russian-recipes-parser/
 recipes.json
 recipe_chunks*.json
+*.pth
