@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7
+    container_name: redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  chromadb:
+    image: chromadb/chroma:1.5.9.dev4-arm64
+    container_name: chromadb
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../data/chroma_db:/chroma
+    restart: unless-stopped
