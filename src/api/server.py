@@ -96,7 +96,7 @@ def synthesize_russian_ogg(text: str) -> bytes:
     sf.write(wav_buf, audio_np, sample_rate, format="WAV")
     wav_buf.seek(0)
 
-    # 🔥 WAV → OGG/Opus
+    # WAV → OGG/Opus
     process = subprocess.Popen(
         [
             "ffmpeg",

@@ -17,7 +17,6 @@ MIN_AUDIO_SEC = 0.5
 FINAL_SILENCE = 2.0
 
 async def stream_microphone():
-    # Флаг для предотвращения захвата собственного эха
     is_bot_speaking = False
 
     async with websockets.connect(SERVER_URI, max_size=16 * 1024 * 1024) as ws:
@@ -37,7 +36,6 @@ async def stream_microphone():
         def callback(indata, frames, time, status):
             nonlocal buffer, silence_time, is_speaking, utterance_id, is_bot_speaking
             
-            # 🔥 ГЛАВНЫЙ ФИКС: Если бот говорит, игнорируем вход с микрофона
             if is_bot_speaking:
                 return
 
@@ -115,12 +113,12 @@ async def stream_microphone():
                         try:
                             audio_np, sr = sf.read(io.BytesIO(full_audio), dtype="float32")
                             
-                            # 🔥 Блокируем микрофон перед проигрыванием
+                            # Блокируем микрофон перед проигрыванием
                             is_bot_speaking = True
                             sd.play(audio_np, sr)
                             sd.wait() # Ждем окончания воспроизведения
                             
-                            # 🔥 Сбрасываем все состояния, чтобы эхо не попало в новый буфер
+                            # Сбрасываем все состояния, чтобы эхо не попало в новый буфер
                             buffer = []
                             is_speaking = False
                             silence_time = 0.0
