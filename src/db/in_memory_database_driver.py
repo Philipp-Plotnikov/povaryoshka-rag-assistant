@@ -1,5 +1,4 @@
 import redis
-from typing import List
 
 
 class PovaryoshkaInMemoryDatabaseDriver:
@@ -23,7 +22,7 @@ class PovaryoshkaInMemoryDatabaseDriver:
         key = self._key(user_id)
         self.__client.rpush(key, text)
 
-    def get(self, user_id: str) -> List[str]:
+    def get(self, user_id: str) -> list[str]:
         key = self._key(user_id)
         return self.__client.lrange(key, 0, -1) # type: ignore
 

@@ -1,5 +1,4 @@
-from typing import List
-from unittest import result
+from typing import Any
 
 from db.in_memory_database_driver import PovaryoshkaInMemoryDatabaseDriver
 from models.encoder.encoder import PovaryoshkaEncoder
@@ -16,15 +15,17 @@ class PovaryoshkaContextManager:
         llm,
         in_memory_db_driver: PovaryoshkaInMemoryDatabaseDriver,
         persistent_db_driver: PovaryoshkaVectorDatabaseDriver,
-        max_history_length: int = 10,
+        top_k: int = 2,
+        max_history_length: int = 5,
     ):
         self.__encoder = encoder
         self.__llm = llm
-        self.__persistent_db_driver = persistent_db_driver
-        self.__max_history_length = max_history_length
         self.__in_memory_db_driver = in_memory_db_driver
+        self.__persistent_db_driver = persistent_db_driver
+        self.__top_k = top_k
+        self.__max_history_length = max_history_length
 
-    def __summarize(self, text_list: List[str]) -> str:
+    def __summarize(self, text_list: list[str]) -> str:
         text = "\n".join(f"{c}" for c in text_list)
         prompt = f"""
 Ты — система сжатия диалога для памяти ассистента.
@@ -84,7 +85,9 @@ class PovaryoshkaContextManager:
 
 ВЫХОД:
 """
-        return self.__llm.generate(prompt).strip()
+        result = self.__llm.generate(prompt).strip()
+        print(f"Резюме для памяти: '{result}'")
+        return result
 
     def add_context(self, user_id: str, query: str):
         history = self.__in_memory_db_driver.get(user_id)
@@ -104,76 +107,10 @@ class PovaryoshkaContextManager:
         self.__in_memory_db_driver.clear(user_id)
         self.__in_memory_db_driver.add(user_id, summary)
 
-    def get_context(self, user_id: str) -> List[str]:
-        return list(self.__in_memory_db_driver.get(user_id))
+    def get_context_history(self, user_id: str) -> list[str]:
+        return self.__in_memory_db_driver.get(user_id)
 
-    def __is_enough_context(self, query: str, context_list: List[str]) -> bool:
-        context = "\n".join(f"- {c}" for c in context_list)
-        prompt = f"""
-Ты — контроллер качества контекста для системы поиска рецептов.
-
-Твоя задача:
-Определить, достаточно ли текущего контекста, чтобы ответить на вопрос пользователя.
-
-Правила:
-- Ответ только: "да" или "нет"
-- Никаких объяснений
-- Никаких дополнительных слов
-
-====================
-
-ПРИМЕР 1
-
-ЗАПРОС:
-Как сделать крем для торта?
-
-КОНТЕКСТ:
-- Сливки 33%, сахарная пудра, ваниль
-- Взбить до плотных пиков
-
-ОТВЕТ:
-да
-
-ПРИМЕР 2
-
-ЗАПРОС:
-Как приготовить тесто для блинов?
-
-КОНТЕКСТ:
-- Мука, молоко, яйца, соль, сахар
-- Смешать до однородного жидкого теста
-
-ОТВЕТ:
-да
-
-ПРИМЕР 3
-
-ЗАПРОС:
-Как приготовить сложный десерт с кремом и начинкой?
-
-КОНТЕКСТ:
-- Мука
-- Молоко
-
-ОТВЕТ:
-нет
-
-====================
-
-ТЕКУЩАЯ ЗАДАЧА:
-
-ЗАПРОС:
-{query}
-
-КОНТЕКСТ:
-{context}
-
-ОТВЕТ:
-"""
-        result = self.__llm.generate(prompt).strip().lower()
-        return result.startswith("да")
-
-    def __rewrite_query(self, query: str, context_list: List[str]) -> str:
+    def __rewrite_query(self, query: str, context_list: list[str]) -> str:
         context = "\n".join(f"- {c}" for c in context_list)
         prompt = f"""
 Ты — система улучшения поисковых запросов для поиска документов.
@@ -235,37 +172,39 @@ class PovaryoshkaContextManager:
 
 ОТВЕТ:
 """
-        return self.__llm.generate(prompt).strip()
-    
-    def __deduplicate(self, texts: List[str]) -> List[str]:
+        result = self.__llm.generate(prompt).strip()
+        print(f"Преобразованный запрос для ретривера: '{result}'")
+        return result
+
+    def __deduplicate(self, text_list: list[str]) -> list[str]:
         seen = set()
         result = []
-        for t in texts:
+        for t in text_list:
             if t not in seen:
                 seen.add(t)
                 result.append(t)
         return result
 
-    def process(self, user_id: str, query: str):
-        self.add_context(user_id, query)
-        context = self.get_context(user_id)
-        max_iters = 5
-        for _ in range(max_iters):
-            if self.__is_enough_context(query, context):
-                break
-            retrieval_query = self.__rewrite_query(query, context)
-            query_embedding = self.__encoder.encode([retrieval_query])[0]
-            retrieved = self.__persistent_db_driver.search(
-                embedding_tensor=query_embedding,
-                top_k=5,
-                where={"user_id": user_id}
-            )
-            retrieved_texts = [r["text"] for r in retrieved]
-            context = self.__deduplicate(context + retrieved_texts)
-        final_query = self.__rewrite_query(query, context)
+    def process(self, user_id: str, full_context: dict[str, Any]) -> dict[str, Any]:
+        query = full_context['query']
+        context_history = full_context['context_history']
+        retrieval_query = self.__rewrite_query(query, context_history)
+        query_embedding = self.__encoder.encode([retrieval_query])[0]
+        retrieved_document_list = self.__persistent_db_driver.search(
+            embedding_tensor=query_embedding,
+            top_k=self.__top_k,
+            where={"user_id": user_id}
+        )
+        retrieved_text_list: list[str] = [retrieved_document["text"] for retrieved_document in retrieved_document_list]
+        print(f"Ретривер вернул для запроса '{retrieval_query}': {retrieved_text_list}")
+        deduplicated_context_history = self.__deduplicate(
+            [query, *context_history, *retrieved_text_list]
+        )
+        updated_query = self.__rewrite_query(query, deduplicated_context_history[1:])
+        print(f"Финальный запрос для ретривера: '{updated_query}'")
         return {
-            "query": final_query,   # для retriever
-            "context": context     # для LLM
+            "query": updated_query,
+            "context_history": context_history
         }
 
 class DummyLLM:
@@ -308,10 +247,15 @@ if __name__ == "__main__":
     retriever.build_index(
         [chunk['text'] for chunk in common_chunk_list]
     )
+    full_context = {
+        'query': "",
+        'context_history': []
+    }
     while True:
         user_input = input("Введите запрос: ")
-        result = context_manager.process("user_1", user_input)
-        retriever_answer = retriever.get_chunk_list(result['context'][-1])
-        print("Преобразованный запрос для ретривера:", result["query"])
+        full_context['query'] = user_input
+        full_context = context_manager.process("user_1", full_context)
+        retriever_answer = retriever.get_chunk_list(full_context['context_history'][-1])
+        print("Преобразованный запрос для ретривера:", full_context["query"])
         print("Ответ от ретривера: ", retriever_answer)
-        print("Контекст для LLM:", result["context"])
+        print("Контекст для LLM:", full_context["context_history"])

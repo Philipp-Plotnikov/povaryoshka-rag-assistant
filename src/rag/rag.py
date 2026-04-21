@@ -2,6 +2,7 @@ from typing import Any
 
 from context_manager.context_manager import PovaryoshkaContextManager
 from models.llm.llm import PovaryoshkaLLM
+from query_router.query_router import PovaryoshkaQueryRouter
 from retriever.retriever import PovaryoshkaRetriever
 
 
@@ -9,21 +10,35 @@ class PovaryoshkaRAG:
     def __init__(
         self,
         context_manager: PovaryoshkaContextManager,
+        query_router: PovaryoshkaQueryRouter,
         retriever: PovaryoshkaRetriever,
         llm: PovaryoshkaLLM
     ):
         self.__context_manager = context_manager
+        self.__query_router = query_router
         self.__retriever = retriever
         self.__llm = llm
 
     def generate(self, user_id: str, query: str):
-        context = self.__context_manager.process(user_id, query)
-        retriever_answer = self.__retriever.get_chunk_list(context['query'])
-        prompt = self.__build_prompt(context['context'], retriever_answer)
+        context_history = self.__context_manager.get_context_history(user_id)
+        self.__context_manager.add_context(user_id, query)
+        full_context = {
+            'query': query,
+            'context_history': context_history
+        }
+        max_iters = 5
+        for _ in range(max_iters):
+            if self.__query_router.route_query(full_context) == "retriever":
+                break
+            full_context = self.__context_manager.process(user_id, full_context)
+        retrieved_chunk_list = self.__retriever.get_chunk_list(full_context['query'])
+        prompt = self.__build_prompt(
+            full_context['query'],
+            retrieved_chunk_list
+        )
         return self.__llm.generate(prompt)
 
-    def __build_prompt(self, context_list: list[str], chunk_list: list[dict[str, Any]]) -> str:
-        query = "\n".join(f"- {c}" for c in context_list)
+    def __build_prompt(self, query: str, chunk_list: list[dict[str, Any]]) -> str:
         docs_text = "\n".join(f"- {d.get('text', '')}" for d in chunk_list)
 
         prompt = f"""

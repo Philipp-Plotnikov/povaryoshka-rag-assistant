@@ -1,6 +1,5 @@
 from fastapi import FastAPI, WebSocket
 import uvicorn
-import numpy as np
 import soundfile as sf
 import io
 from faster_whisper import WhisperModel
@@ -8,14 +7,15 @@ import asyncio
 from context_manager.context_manager import PovaryoshkaContextManager
 from db.in_memory_database_driver import PovaryoshkaInMemoryDatabaseDriver
 from db.vector_database_driver import PovaryoshkaVectorDatabaseDriver
+from models.context_sufficiency_classifier.context_sufficiency_classifier import PovaryoshkaContextSufficiencyClassifier
 from models.encoder.utils import load_encoder
 from models.llm.llm import PovaryoshkaLLM
+from query_router.query_router import PovaryoshkaQueryRouter
 from rag.rag import PovaryoshkaRAG
 from retriever.retriever import PovaryoshkaRetriever
 import torch
 import json
 import base64
-from typing import Dict, Optional
 import subprocess
 
 from training.encoder_train_loop.utils import get_train_chunk_list, get_val_chunk_list
@@ -66,11 +66,19 @@ retriever = PovaryoshkaRetriever(
     encoder=encoder,
     persistent_db_driver=retriever_persistent_db_driver
 )
+context_sufficiency_classifier = PovaryoshkaContextSufficiencyClassifier(
+    retriever_persistent_db_driver=retriever_persistent_db_driver
+)
+query_router = PovaryoshkaQueryRouter(
+    encoder=encoder,
+    context_sufficiency_classifier=context_sufficiency_classifier
+)
 retriever.build_index(
     [chunk['text'] for chunk in common_chunk_list]
 )
 rag = PovaryoshkaRAG(
     context_manager=context_manager,
+    query_router=query_router,
     retriever=retriever,
     llm=llm
 )
