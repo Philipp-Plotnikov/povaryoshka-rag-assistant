@@ -1,3 +1,7 @@
+import math
+import time
+import torch
+import numpy as np
 from typing import Any
 
 from db.in_memory_database_driver import PovaryoshkaInMemoryDatabaseDriver
@@ -75,7 +79,7 @@ class PovaryoshkaContextManager:
 выпекать при 180 градусах около 40 минут
 
 ВЫХОД:
-Шарлотку готовят из яблок, яиц, сахара и муки. Тесто смешивают с яблоками и выпекают при 180°C около 40 минут до готовности.
+Шарлотку готовят из яблок, яиц, сахара и муки. Тесто смешивают с яблоками и выпекают при ста восьмидесяти градусах около сорока минут до готовности.
 
 ПРИМЕР 4:
 
@@ -99,25 +103,72 @@ class PovaryoshkaContextManager:
         return result
 
     def add_context(self, user_id: str, query: str):
-        history = self.__in_memory_db_driver.get(user_id)
-        if len(history) >= self.__max_history_length:
-            self.__compress_memory(user_id)
-        self.__in_memory_db_driver.add(user_id, query)
+        context_history = self.__in_memory_db_driver.get(user_id)
+        if len(context_history) == 0:
+            self.__in_memory_db_driver.add(
+                user_id,
+                {
+                    'text': query,
+                    'timestamp': time.time()
+                }
+            )
+            return
+        similarity_score = self.similarity(query, context_history)
+        if len(context_history) >= self.__max_history_length or similarity_score < 0.43:
+            if similarity_score < 0.45:
+                self.__compress_memory(user_id, is_leave_in_memory=False)
+            else:
+                self.__compress_memory(user_id)
+        self.__in_memory_db_driver.add(
+            user_id,
+            {
+                'text': query,
+                'timestamp': time.time()
+            }
+        )
 
-    def __compress_memory(self, user_id: str):
-        history = list(self.__in_memory_db_driver.get(user_id))
-        summary = self.__summarize(history)
+    def similarity(self, query: str, context_history: list[dict[str, Any]]) -> float:
+        query_embedding = self.__encoder.encode([query])[0]
+        context_history_text_list = [context_item["text"] for context_item in context_history]
+        context_embeddings_tensor = self.__encoder.encode(context_history_text_list)
+        similarities_tensor = torch.matmul(context_embeddings_tensor, query_embedding)
+        score_list = []
+        now = time.time()
+        for similarity, context_item in zip(similarities_tensor, context_history):
+            age = now - context_item["timestamp"]
+            decay = math.exp(-age / 3600)
+            score_list.append(similarity.item() * decay)
+        return float(np.mean(score_list))
+
+    def __compress_memory(self, user_id: str, is_leave_in_memory=True):
+        context_history = self.__in_memory_db_driver.get(user_id)
+        summary = self.__summarize([item['text'] for item in context_history])
         embeddings_tensor = self.__encoder.encode([summary])
+        summary_timestamp = max(item["timestamp"] for item in context_history)
         self.__persistent_db_driver.add(
             document_list=[summary],
             embedding_list=[embedding.cpu().numpy() for embedding in embeddings_tensor],
-            metadata_list=[{"user_id": user_id, "type": "summary"}]
+            metadata_list=[
+                {
+                    "user_id": user_id,
+                    "type": "summary",
+                    "timestamp": summary_timestamp
+                }
+            ]
         )
         self.__in_memory_db_driver.clear(user_id)
-        self.__in_memory_db_driver.add(user_id, summary)
+        if is_leave_in_memory:
+            self.__in_memory_db_driver.add(
+                user_id,
+                {
+                    'text': summary,
+                    'timestamp': summary_timestamp
+                }
+            )
 
-    def get_context_history(self, user_id: str) -> list[str]:
-        return self.__in_memory_db_driver.get(user_id)
+    def get_context_history(self, user_id: str) -> list[dict[str, Any]]:
+        user_context_history = self.__in_memory_db_driver.get(user_id)
+        return user_context_history
 
     def __rewrite_query(self, query: str, context_list: list[str]) -> str:
         context = "\n".join(f"- {c}" for c in context_list)
@@ -202,7 +253,18 @@ class PovaryoshkaContextManager:
         retrieved_document_list = self.__persistent_db_driver.search(
             embedding_tensor=query_embedding,
             top_k=self.__top_k,
-            where={"user_id": user_id}
+            where={
+                "$and": [
+                    {
+                        "user_id": user_id
+                    },
+                    {
+                        "timestamp": {
+                            "$gte": time.time() - 2 * 3600
+                        }
+                    }
+                ]
+            }
         )
         retrieved_text_list: list[str] = [retrieved_document["text"] for retrieved_document in retrieved_document_list]
         print(f"Ретривер вернул для запроса '{retrieval_query}': {retrieved_text_list}")
@@ -221,13 +283,7 @@ class DummyLLM:
         self.counter = 1
 
     def generate(self, prompt: str) -> str:
-        if self.counter % 4 != 0:
-            message = f"да {self.counter}"
-            self.counter += 1
-            return message
-        message = f"нет {self.counter}"
-        self.counter += 1
-        return message
+        return prompt
 
 if __name__ == "__main__":
     device = 'cpu'
@@ -257,14 +313,13 @@ if __name__ == "__main__":
         [chunk['text'] for chunk in common_chunk_list]
     )
     full_context = {
-        'query': "",
+        'query': '',
         'context_history': []
     }
     while True:
         user_input = input("Введите запрос: ")
         full_context['query'] = user_input
         full_context = context_manager.process("user_1", full_context)
-        retriever_answer = retriever.get_chunk_list(full_context['context_history'][-1])
+        retriever_answer = retriever.get_chunk_list(full_context['query'])
         print("Преобразованный запрос для ретривера:", full_context["query"])
         print("Ответ от ретривера: ", retriever_answer)
-        print("Контекст для LLM:", full_context["context_history"])
