@@ -2,7 +2,7 @@ import chromadb
 import torch
 import uuid
 
-from typing import List, Any
+from typing import List, Any, Literal
 from chromadb.api.types import (
     Embedding,
     Metadata
@@ -50,6 +50,7 @@ class PovaryoshkaVectorDatabaseDriver:
         embedding_tensor: torch.Tensor,
         top_k: int,
         where: dict[str, Any] | None = None,
+        order: Literal["asc", "desc"] | None = None
     ) -> List[dict[str, Any]]:
         embedding_list = embedding_tensor.tolist()
         results = self.__collection.query(
@@ -59,11 +60,21 @@ class PovaryoshkaVectorDatabaseDriver:
         )
         if not results["documents"] or len(results["documents"][0]) == 0:
             return []
+    
+        # Собираем результаты в список
         output = []
         for i in range(len(results["documents"][0])):
             output.append({
                 "text": results["documents"][0][i],
-                "metadata": results["metadatas"][0][i], # type: ignore
-                "distance": results["distances"][0][i], # type: ignore
+                "metadata": results["metadatas"][0][i],  # type: ignore
+                "distance": results["distances"][0][i],  # type: ignore
             })
+    
+        # Сортируем по timestamp, если указан order
+        if order is not None:
+            # Получаем timestamp из metadata (если нет, используем 0)
+            output.sort(
+                key=lambda x: x["metadata"].get("timestamp", 0),
+                reverse=(order == "desc")  # desc = новые сначала (больший timestamp)
+            )
         return output

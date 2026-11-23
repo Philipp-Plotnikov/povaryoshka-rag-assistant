@@ -1,5 +1,15 @@
-/data
+/data/*
 .vscode
 __pycache__
 .DS_Store
 /models
+logs
+!/data/train_llm_answer_generation_dataset.json
+!/data/train_llm_query_rewriting_dataset.json
+!/data/train_llm_summarization_dataset.json
+
+!/data/val_llm_answer_generation_dataset.json
+!/data/val_llm_query_rewriting_dataset.json
+!/data/val_llm_summarization_dataset.json
+
+!/data/train_pruned_recipe_chunks_with_questions_1.json

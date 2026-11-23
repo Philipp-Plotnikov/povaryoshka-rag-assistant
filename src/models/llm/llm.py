@@ -1,76 +1,201 @@
-from llama_cpp import Any, Llama
+from typing import Any, Literal
+
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel
+import torch
 
 
 class PovaryoshkaLLM:
-    def __init__(self):
-        self.__model = Llama(
-            model_path="/Users/philippplotnikov/WorkingSpace/Coding/models/Qwen3-8B-Q4_K_M-Instruct.gguf",
-            n_ctx=4096,
-            n_threads=8,
-            n_gpu_layers=40,
-            verbose=False
+    def __init__(
+            self,
+            base_model_path="../models/qwen3-4b",
+            answer_generation_lora_path="../models/qwen3-4b-sft-lora-adapter/final-answer-generation-lora-adapter",
+            summarization_lora_path="../models/qwen3-4b-sft-lora-adapter/final-summarization-lora-adapter",
+            query_rewriting_lora_path="../models/qwen3-4b-sft-lora-adapter/final-query-rewriting-lora-adapter"
+        ):
+        self.device = "mps" if torch.backends.mps.is_available() else "cpu"
+
+        # --- tokenizer ---
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            base_model_path,
+            trust_remote_code=True
         )
+
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        # --- base model ---
+        base_model = AutoModelForCausalLM.from_pretrained(
+            base_model_path,
+            torch_dtype=torch.float16,
+            device_map=None  # ⚠️ важно для MPS
+        )
+
+        base_model.to(self.device) # type: ignore
+
+        # --- LoRA: answer ---
+        self.model = PeftModel.from_pretrained(
+            base_model,
+            answer_generation_lora_path,
+            adapter_name="answer"
+        )
+
+        # --- LoRA: summary ---
+        self.model.load_adapter(
+            summarization_lora_path,
+            adapter_name="summary"
+        )
+
+        self.model.load_adapter(
+            query_rewriting_lora_path,
+            adapter_name="query_rewriting"
+        )
+
+        self.model.eval()
+
+        # ⚡ ускорение
+        torch.set_float32_matmul_precision("high")
 
     def generate(
         self,
         prompt: str,
-        max_new_tokens: int = 512,
+        task: Literal["summary", "answer", "query_rewriting"]="answer",
+        max_new_tokens: int = 2000,
         temperature: float = 0.7,
-        top_k: int = 40,
         top_p: float = 0.9,
     ) -> str:
 
-        output = self.__model(
-            prompt,
-            max_tokens=max_new_tokens,
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-            repeat_penalty=1.2,
+        # --- переключаем LoRA ---
+        if task == "summary":
+            self.model.set_adapter("summary")
+        elif task == "query_rewriting":
+            self.model.set_adapter("query_rewriting")
+        else:
+            self.model.set_adapter("answer")
 
-            # 🔥 ключевая защита от "повторения prompt"
-            stop=[
-                "ВОПРОС:",
-                "ЗАПРОС:",
-                "РЕЦЕПТЫ:",
-                "ОТВЕТ:",
-                "ВХОД:",
-                "ВЫХОД:",
-                "ТЕКУЩАЯ ЗАДАЧА:",
-                "====================",
-                "[Ваш ответ здесь]",
-                "\n\n\n"
-            ]
-        )
+        # --- токенизация ---
+        prompt = self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": f"{prompt} /no_think"}],
+            tokenize=False,
+            add_generation_prompt=True,
+        ) 
+        model_inputs = self.tokenizer(
+            [prompt],
+            return_tensors="pt"
+        ).to(self.device)
 
-        text = output["choices"][0]["text"]  # type: ignore
-
-        # 🧹 пост-очистка от эхоповторов
-        text = self.__postprocess(text, prompt)
-
-        return text.strip()
+        with torch.inference_mode():
+            generated_ids = self.model.generate(
+                **model_inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                do_sample=True,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+            )
+        output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist() 
+        try:
+            # rindex finding 151668 (<tool_call>)
+            index = len(output_ids) - output_ids[::-1].index(151668)
+        except ValueError:
+            index = 0
+        content = self.tokenizer.decode(output_ids[index:], skip_special_tokens=True).strip("\n")
+        return self.__postprocess(content, prompt)
 
     def __postprocess(self, text: str, prompt: str) -> str:
-        # удаляем случайный echo prompt
+        # убираем echo prompt
         if prompt in text:
             text = text.replace(prompt, "")
 
-        # убираем возможные повторяющиеся строки
+        # убираем дубликаты строк
         lines = text.split("\n")
-        cleaned = []
         seen = set()
+        cleaned = []
 
         for line in lines:
-            if line.strip() and line not in seen:
+            line = line.strip()
+            if line and line not in seen:
                 cleaned.append(line)
                 seen.add(line)
 
-        return "\n".join(cleaned)
+        return "\n".join(cleaned).strip()
+
+# from llama_cpp import Any, Llama
+
+
+# class PovaryoshkaLLM:
+#     def __init__(self):
+#         self.__model = Llama(
+#             model_path="/Users/philippplotnikov/WorkingSpace/Coding/models/Qwen3-8B-Q4_K_M-Instruct.gguf",
+#             n_ctx=4096,
+#             n_threads=8,
+#             n_gpu_layers=40,
+#             verbose=False
+#         )
+
+#     def generate(
+#         self,
+#         prompt: str,
+#         max_new_tokens: int = 512,
+#         temperature: float = 0.7,
+#         top_k: int = 40,
+#         top_p: float = 0.9,
+#     ) -> str:
+
+#         output = self.__model(
+#             prompt,
+#             max_tokens=max_new_tokens,
+#             temperature=temperature,
+#             top_k=top_k,
+#             top_p=top_p,
+#             repeat_penalty=1.2,
+
+#             stop=[
+#                 "ВОПРОС:",
+#                 "ЗАПРОС:",
+#                 "РЕЦЕПТЫ:",
+#                 "ОТВЕТ:",
+#                 "ВХОД:",
+#                 "ВЫХОД:",
+#                 "ТЕКУЩАЯ ЗАДАЧА:",
+#                 "====================",
+#                 "[Ваш ответ здесь]",
+#                 "(здесь должен быть твой ответ)",
+#                 "(нужно сжать диалог в краткое резюме)",
+#                 "[ВАШ ВЫХОД ТУТ]",
+#                 "(ответ должен быть на русском языке, отвечай дружелюбно и естественно)",
+#                 "\n\n\n"
+#             ]
+#         )
+
+#         text = output["choices"][0]["text"]  # type: ignore
+
+#         text = self.__postprocess(text, prompt)
+
+#         return text.strip()
+
+#     def __postprocess(self, text: str, prompt: str) -> str:
+#         # удаляем случайный echo prompt
+#         if prompt in text:
+#             text = text.replace(prompt, "")
+
+#         # убираем возможные повторяющиеся строки
+#         lines = text.split("\n")
+#         cleaned = []
+#         seen = set()
+
+#         for line in lines:
+#             if line.strip() and line not in seen:
+#                 cleaned.append(line)
+#                 seen.add(line)
+
+#         return "\n".join(cleaned)
 
 def build_prompt(query: str, chunk_list: list[dict[str, Any]]) -> str:
     docs_text = "\n".join(f"- {d.get('text', '')}" for d in chunk_list)
     prompt = f"""
-Ты — дружелюбный кулинарный ассистент.
+Ты — дружелюбный кулинарный ассистент, Поварешка.
 ВАЖНЫЕ ПРАВИЛА:
 - Никогда не повторяй инструкции или структуру контекста.
 - Отвечай только как человек, а не как модель.
@@ -214,3 +339,5 @@ if __name__ == "__main__":
         ]
     )
     print(llm.generate(prompt))
+
+

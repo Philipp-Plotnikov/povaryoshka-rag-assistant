@@ -1,3 +1,6 @@
+import json
+from typing import Any
+
 import redis
 
 
@@ -18,13 +21,13 @@ class PovaryoshkaInMemoryDatabaseDriver:
     def _key(self, user_id: str) -> str:
         return f"user:{user_id}:history"
 
-    def add(self, user_id: str, text: str):
+    def add(self, user_id: str, data: dict[str, Any]):
         key = self._key(user_id)
-        self.__client.rpush(key, text)
+        self.__client.rpush(key, json.dumps(data))
 
-    def get(self, user_id: str) -> list[str]:
+    def get(self, user_id: str) -> list[dict[str, Any]]:
         key = self._key(user_id)
-        return self.__client.lrange(key, 0, -1) # type: ignore
+        return [json.loads(item) for item in self.__client.lrange(key, 0, -1)] # type: ignore
 
     def clear(self, user_id: str):
         key = self._key(user_id)
