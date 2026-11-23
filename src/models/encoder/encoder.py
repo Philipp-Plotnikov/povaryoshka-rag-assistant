@@ -8,6 +8,7 @@ import torch
 from models.encoder.multi_negative_loss import MultiNegativeLoss
 
  
+#  TODO: deepvk/USER2-base
 class PovaryoshkaEncoder(nn.Module):
     def __init__(
         self,

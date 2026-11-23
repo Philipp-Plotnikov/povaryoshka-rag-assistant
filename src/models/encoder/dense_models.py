@@ -4,6 +4,7 @@ from sentence_transformers import SentenceTransformer
 
 # TODO: Define device dynamically
 # TODO: Think about the best batch size value
+# TODO: Use intfloat/multilingual-e5-large
 class DenseModel:
     def __init__(
         self,

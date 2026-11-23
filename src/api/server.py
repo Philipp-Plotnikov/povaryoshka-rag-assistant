@@ -22,7 +22,8 @@ import subprocess
 
 from training.encoder_train_loop.utils import get_train_chunk_list, get_val_chunk_list
 
-
+# curl -X DELETE \
+#   http://localhost:8000/api/v2/tenants/povaryoshka/databases/assistant/collections/documents
 POVARYOSHKA_SERVER = FastAPI()
 
 # ======================
@@ -141,32 +142,36 @@ def synthesize_russian_wav(text: str):
         audio_parts.append(audio_tensor.cpu())
 
     full_audio = torch.cat(audio_parts)
-    return full_audio.numpy().astype("float32")
-
-def synthesize_ogg(text: str) -> bytes:
-    audio_np = synthesize_russian_wav(text)
-
+    audio_np = full_audio.numpy().astype("float32")
     wav_buf = io.BytesIO()
     sf.write(wav_buf, audio_np, sample_rate, format="WAV")
     wav_buf.seek(0)
+    return wav_buf.read()
 
-    process = subprocess.Popen(
-        [
-            "ffmpeg",
-            "-i", "pipe:0",
-            "-c:a", "libopus",
-            "-b:a", "32k",
-            "-vbr", "on",
-            "-f", "ogg",
-            "pipe:1"
-        ],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL
-    )
+# def synthesize_ogg(text: str) -> bytes:
+#     audio_np = synthesize_russian_wav(text)
 
-    ogg_audio, _ = process.communicate(wav_buf.read())
-    return ogg_audio
+#     wav_buf = io.BytesIO()
+#     sf.write(wav_buf, audio_np, sample_rate, format="WAV")
+#     wav_buf.seek(0)
+
+#     process = subprocess.Popen(
+#         [
+#             "ffmpeg",
+#             "-i", "pipe:0",
+#             "-c:a", "libopus",
+#             "-b:a", "32k",
+#             "-vbr", "on",
+#             "-f", "ogg",
+#             "pipe:1"
+#         ],
+#         stdin=subprocess.PIPE,
+#         stdout=subprocess.PIPE,
+#         stderr=subprocess.DEVNULL
+#     )
+
+#     ogg_audio, _ = process.communicate(wav_buf.read())
+#     return ogg_audio
 
 
 # ======================
@@ -272,7 +277,7 @@ async def ws_voice(websocket: WebSocket):
             # TTS (NON BLOCKING)
             # ======================
             try:
-                ogg = await asyncio.to_thread(synthesize_ogg, answer)
+                wav = await asyncio.to_thread(synthesize_russian_wav, answer)
             except Exception as e:
                 print("tts error:", e)
                 continue
@@ -282,7 +287,7 @@ async def ws_voice(websocket: WebSocket):
             # ======================
             await send_audio_stream(
                 websocket,
-                ogg,
+                wav,
                 utterance_id
             )
 
